@@ -16,15 +16,20 @@ import (
 // and reply for an RPC.
 //
 
+type RequestEnum int
+
+const (
+	ClaimTask RequestEnum = 1
+)
+
 type ExampleArgs struct {
 	Type RequestEnum
 }
 
 type ExampleReply struct {
-	Code          int
-	Type          RequestEnum
-	InputFileName string
-	MapTaskNum    int
+	Code    int
+	Type    RequestEnum
+	MapTask Task
 }
 
 // Add your RPC definitions here.
