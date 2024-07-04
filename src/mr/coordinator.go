@@ -48,7 +48,7 @@ type Coordinator struct {
 	pendingReduce map[int]int
 	fMap          map[int]int
 	fReduce       map[int]int
-	tasks         map[int]Task
+	tasks         map[int]*Task
 	mutex         sync.Mutex
 }
 
@@ -64,14 +64,12 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 		c.claimTask(&task)
 		reply.Code = 0
 		reply.Task = task
-		break
 	case SubmitTask:
 		err := c.doneTask(args.Task)
 		if err != nil {
 			return err
 		}
 		reply.Code = 0
-		break
 	default:
 		log.Fatal("unkown RequestType")
 		return errors.New("unkown RequestType")
@@ -105,7 +103,7 @@ func (c *Coordinator) submitMapTask(task Task) error {
 	oTask.InterMeDiateFiles = task.InterMeDiateFiles
 
 	c.mutex.Lock()
-	c.mutex.Unlock()
+	defer c.mutex.Unlock()
 
 	c.fMap[oTask.TagetId] = oTask.Seq
 	delete(c.pendingMap, oTask.TagetId)
@@ -128,7 +126,8 @@ func (c *Coordinator) submitReduceTask(task Task) error {
 	oTask.OutputFile = task.OutputFile
 
 	c.mutex.Lock()
-	c.mutex.Unlock()
+	defer c.mutex.Unlock()
+
 	c.fMap[oTask.TagetId] = oTask.Seq
 	delete(c.pendingMap, oTask.TagetId)
 	return nil
