@@ -19,17 +19,18 @@ import (
 type RequestEnum int
 
 const (
-	ClaimTask RequestEnum = 1
+	ClaimTask  RequestEnum = 1
+	SubmitTask RequestEnum = 2
 )
 
 type ExampleArgs struct {
 	Type RequestEnum
+	Task Task
 }
 
 type ExampleReply struct {
-	Code    int
-	Type    RequestEnum
-	MapTask Task
+	Code int
+	Task Task
 }
 
 // Add your RPC definitions here.

@@ -1,10 +1,16 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"log"
 	"net/rpc"
+	"os"
+	"sort"
+	"strconv"
+	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -12,6 +18,14 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -24,39 +38,139 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
+	for {
+		// claim map task
+		task := claimTask()
+		if task == nil {
+			time.Sleep(time.Second)
+		}
 
-	// Your worker implementation here.
+		// do task
+		switch task.Type {
+		case Map:
+			doMap(task, mapf)
+			break
+		case Reduce:
+			doReduce(task, reducef)
+			break
+		default:
+			continue
+		}
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+		if task.Status == DONE {
+			submitTask(task)
+		}
+	}
 
 }
 
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func CallExample() {
+func doMap(task *Task, mapf func(string, string) []KeyValue) {
+	filename := task.InputFile
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := io.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	intermediate := []KeyValue{}
+	kva := mapf(filename, string(content))
+	intermediate = append(intermediate, kva...)
 
-	// declare an argument structure.
-	args := ExampleArgs{}
+	nIntermediate := make([][]KeyValue, task.NReduce)
 
-	// fill in the argument(s).
-	args.Type = ClaimTask
+	for _, kv := range intermediate {
+		i := ihash(kv.Key) % task.NReduce
+		nIntermediate[i] = append(nIntermediate[i], kv)
+	}
 
-	// declare a reply structure.
+	var intermediateFiles []string
+	for i := 0; i < task.NReduce; i++ {
+		if len(nIntermediate[i]) <= 0 {
+			continue
+		}
+		oname := "mr-" + strconv.Itoa(task.Seq) + strconv.Itoa(i)
+		ofile, _ := os.Create(oname)
+		enc := json.NewEncoder(ofile)
+		for _, kv := range nIntermediate[i] {
+			enc.Encode(kv)
+		}
+		intermediateFiles = append(intermediateFiles, oname)
+		ofile.Close()
+	}
+
+	task.InterMeDiateFiles = intermediateFiles
+	task.Status = DONE
+}
+
+func doReduce(task *Task, reducef func(string, []string) string) {
+	var kva []KeyValue
+	for _, filename := range task.InterMeDiateFiles {
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kva = append(kva, kv)
+		}
+		file.Close()
+	}
+	sort.Sort(ByKey(kva))
+
+	ofile, _ := os.CreateTemp("", "*")
+
+	i := 0
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := reducef(kva[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+
+		i = j
+	}
+	oname := "mr-out-" + strconv.Itoa(task.TagetId)
+	os.Rename(ofile.Name(), oname)
+	ofile.Close()
+	task.OutputFile = oname
+	task.Status = DONE
+}
+
+func claimTask() *Task {
+	args := ExampleArgs{
+		Type: ClaimTask,
+	}
 	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
 	ok := call("Coordinator.Example", &args, &reply)
 	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Type %v replay.InputFileName %v replay.MapTaskNum %v\n", reply.Type, reply.InputFileName, reply.MapTaskNum)
+		task := &reply.Task
+		return task
 	} else {
-		fmt.Printf("call failed!\n")
+		return nil
 	}
+}
+
+func submitTask(task *Task) {
+	args := ExampleArgs{
+		Type: SubmitTask,
+		Task: *task,
+	}
+	reply := ExampleReply{}
+	call("Coordinator.Example", &args, &reply)
 }
 
 // send an RPC request to the coordinator, wait for the response.
