@@ -40,16 +40,17 @@ type Task struct {
 }
 
 type Coordinator struct {
-	InputFiles    []string
-	nextTaskSeq   int
-	nMap          int
-	nReduce       int
-	pendingMap    map[int]int
-	pendingReduce map[int]int
-	fMap          map[int]int
-	fReduce       map[int]int
-	tasks         map[int]*Task
-	mutex         sync.Mutex
+	iMap []*Task
+	pMap map[int]*Task
+	fMap []*Task
+	// iReduce []int
+	// pReduce []int
+	// fReduce []int
+	nMap    int
+	nReduce int
+	mutex   sync.Mutex
+	mDone   bool
+	rDone   bool
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -61,7 +62,7 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	switch args.Type {
 	case ClaimTask:
 		var task Task
-		c.claimTask(&task)
+		c.fetchTask(&task)
 		reply.Code = 0
 		reply.Task = task
 	case SubmitTask:
@@ -139,15 +140,15 @@ func (c *Coordinator) getNextTaskSeq() int {
 	return c.nextTaskSeq
 }
 
-func (c *Coordinator) claimTask(task *Task) {
-	c.createMapTask(task)
+func (c *Coordinator) fetchTask() *Task {
+	task := c.fetchMapTask()
 	if task != nil {
-		return
+		return task
 	}
 	c.createReduceTask(task)
 }
 
-func (c *Coordinator) createMapTask(task *Task) {
+func (c *Coordinator) fetchMapTask() *Task {
 	c.mutex.Lock()
 	i := 0
 	var file string
@@ -217,18 +218,6 @@ func (c *Coordinator) createReduceTask(task *Task) {
 	c.tasks[iSeq] = *task
 }
 
-func (c *Coordinator) mapAllDone() bool {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	return c.nMap == len(c.fMap)
-}
-
-func (c *Coordinator) reduceAllDone() bool {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	return c.nReduce == len(c.fReduce)
-}
-
 // start a thread that listens for RPCs from worker.go
 func (c *Coordinator) server() {
 	rpc.Register(c)
@@ -246,23 +235,82 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	return c.reduceAllDone()
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if c.mDone && c.rDone {
+		return true
+	}
+	if !c.mDone && len(c.fMap) == c.nMap {
+		c.mDone = true
+		return false
+	}
+	if c.mDone && !c.rDone && len(c.fMap) == c.nReduce {
+		c.rDone = true
+		return true
+	}
+	return false
+}
+
+func (c *Coordinator) pendingTask() *Task {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	task := c.iMap[0]
+	c.pMap[task.Seq] = task
+	c.iMap = c.iMap[1:]
+	return task
+}
+
+func (c *Coordinator) finishTask(seq int) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	task := c.pMap[seq]
+	delete(c.pMap, seq)
+	c.fMap = append(c.fMap, task)
+}
+
+func (c *Coordinator) resetTask(seq int) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	task := c.pMap[seq]
+	delete(c.pMap, seq)
+	c.iMap = append(c.iMap, task)
+}
+
+func (c *Coordinator) initTask(files []string, nReduce int) {
+	seq := 0
+	// init map
+	for _, file := range files {
+		task := &Task{
+			Status:    INIT,
+			Type:      Map,
+			Seq:       seq,
+			InputFile: file,
+		}
+		c.iMap = append(c.iMap, task)
+		seq = seq + 1
+	}
+	c.nMap = len(files)
+
+	// init reduce
+	// for i := 0; i < nReduce; i++ {
+	// 	task := Task{
+	// 		Status: INIT,
+	// 		Type: Reduce,
+	// 		Seq: seq,
+	// 	}
+	// 	c.tasks[seq] = &task
+	// 	c.iReduce = append(c.iReduce, seq)
+	// 	seq = seq + 1
+	// }
+	c.nReduce = nReduce
 }
 
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{
-		InputFiles:    files,
-		nextTaskSeq:   0,
-		nReduce:       nReduce,
-		nMap:          len(files),
-		pendingMap:    make(map[int]int),
-		pendingReduce: make(map[int]int),
-		fMap:          make(map[int]int),
-		fReduce:       make(map[int]int),
-	}
+	c := Coordinator{}
+	c.initTask(files, nReduce)
 	c.server()
 	return &c
 }
