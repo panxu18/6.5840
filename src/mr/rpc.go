@@ -6,24 +6,34 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
-import "strconv"
+import (
+	"os"
+	"strconv"
+)
 
 //
 // example to show how to declare the arguments
 // and reply for an RPC.
 //
 
+type RequestEnum int
+
+const (
+	ClaimTask  RequestEnum = 1
+	SubmitTask RequestEnum = 2
+)
+
 type ExampleArgs struct {
-	X int
+	Type RequestEnum
+	Task Task
 }
 
 type ExampleReply struct {
-	Y int
+	Code int
+	Task Task
 }
 
 // Add your RPC definitions here.
-
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
