@@ -2,6 +2,7 @@ package mr
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -40,26 +41,30 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	for {
 		// claim map task
-		task := claimTask()
-		if task == nil {
+
+		task, err := fetchTask()
+		if err != nil {
+			log.Fatal("fetchTask fail")
 			time.Sleep(time.Second)
+			continue
+		}
+		if task.Status == None {
+			time.Sleep(time.Second)
+			continue
 		}
 
 		// do task
 		switch task.Type {
 		case Map:
-			doMap(task, mapf)
-			break
+			doMap(&task, mapf)
 		case Reduce:
-			doReduce(task, reducef)
-			break
+			doReduce(&task, reducef)
 		default:
+			log.Fatal("unkown task type")
 			continue
 		}
 
-		if task.Status == DONE {
-			submitTask(task)
-		}
+		submitTask(&task)
 	}
 
 }
@@ -91,8 +96,11 @@ func doMap(task *Task, mapf func(string, string) []KeyValue) {
 		if len(nIntermediate[i]) <= 0 {
 			continue
 		}
-		oname := "mr-" + strconv.Itoa(task.Seq) + strconv.Itoa(i)
-		ofile, _ := os.Create(oname)
+		oname := "mr-im-" + strconv.Itoa(task.Seq) + "-" + strconv.Itoa(i)
+		ofile, err := os.Create(oname)
+		if err != nil {
+			log.Fatalf("open file %v failed \n", oname)
+		}
 		enc := json.NewEncoder(ofile)
 		for _, kv := range nIntermediate[i] {
 			enc.Encode(kv)
@@ -107,6 +115,7 @@ func doMap(task *Task, mapf func(string, string) []KeyValue) {
 
 func doReduce(task *Task, reducef func(string, []string) string) {
 	var kva []KeyValue
+	// fmt.Printf("reduce start seq: %v id: %v files: %v\n", task.Seq, task.Id, task.InterMeDiateFiles)
 	for _, filename := range task.InterMeDiateFiles {
 		file, err := os.Open(filename)
 		if err != nil {
@@ -143,24 +152,24 @@ func doReduce(task *Task, reducef func(string, []string) string) {
 
 		i = j
 	}
-	oname := "mr-out-" + strconv.Itoa(task.TagetId)
+	oname := "mr-out-" + strconv.Itoa(task.Id)
 	os.Rename(ofile.Name(), oname)
 	ofile.Close()
 	task.OutputFile = oname
 	task.Status = DONE
 }
 
-func claimTask() *Task {
+func fetchTask() (Task, error) {
 	args := ExampleArgs{
 		Type: ClaimTask,
 	}
 	reply := ExampleReply{}
 	ok := call("Coordinator.Example", &args, &reply)
 	if ok {
-		task := &reply.Task
-		return task
+		return reply.Task, nil
 	} else {
-		return nil
+		log.Fatal("rpc error")
+		return Task{}, errors.New("rpc error")
 	}
 }
 
